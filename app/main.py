@@ -6,7 +6,7 @@ import uvicorn
 
 from app.core.config import settings
 from app.database.connection import connect_to_mongo, close_mongo_connection
-from app.routers import auth, sessions, assignments, progress, analytics, context, learning_profiles, file_uploads, instructor_dashboard
+from app.routers import auth, assignments, progress, analytics, context, learning_profiles, file_uploads, instructor_dashboard, intelligent_sessions, structured_sessions, code_execution
 
 # Configure logging
 logging.basicConfig(
@@ -66,7 +66,7 @@ async def shutdown_event():
 
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
-app.include_router(sessions.router, prefix="/sessions", tags=["Sessions"])
+app.include_router(intelligent_sessions.router, prefix="/sessions", tags=["Intelligent Sessions"])
 app.include_router(assignments.router, prefix="/assignments", tags=["Assignments"])
 app.include_router(progress.router, prefix="/progress", tags=["Progress"])
 app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
@@ -74,6 +74,8 @@ app.include_router(context.router, prefix="/context", tags=["Context Compression
 app.include_router(learning_profiles.router, prefix="/learning-profiles", tags=["Learning Profiles"])
 app.include_router(file_uploads.router, prefix="/uploads", tags=["File Uploads"])
 app.include_router(instructor_dashboard.router, prefix="/dashboard", tags=["Instructor Dashboard"])
+app.include_router(structured_sessions.router, prefix="", tags=["Structured Tutoring"])
+app.include_router(code_execution.router, prefix="/code", tags=["Code Execution"])
 
 
 @app.get("/")

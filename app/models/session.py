@@ -72,6 +72,7 @@ class MessageRequest(BaseModel):
 
 class SessionResponse(BaseModel):
     session_id: str
+    assignment_id: str
     status: str
     message: Optional[str] = None
     current_problem: Optional[int] = None

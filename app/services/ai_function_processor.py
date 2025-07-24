@@ -190,7 +190,7 @@ Structure it properly and extract all educational metadata."""
                                     },
                                     "explanation": {
                                         "type": "string",
-                                        "description": "Explanation of the problem approach, algorithm, or solution method. ALWAYS provide if the problem has clear steps or methodology."
+                                        "description": "Natural explanation of how the output was derived from input WITHOUT coding terminology. Focus on data transformation, not code logic. Example: 'In the given list [1,2,3,4,5], the even numbers are 2 and 4, which appear in the output [2,4].'"
                                     },
                                     "difficulty": {
                                         "type": "string",
@@ -213,8 +213,16 @@ Structure it properly and extract all educational metadata."""
                                     },
                                     "test_cases": {
                                         "type": "array",
-                                        "items": {"type": "string"},
-                                        "description": "Generate 2-3 test cases with different scenarios (edge cases, normal cases). Always provide meaningful test cases."
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "input": {"type": "string", "description": "Test input data"},
+                                                "expected_output": {"type": "string", "description": "Expected output for the test"},
+                                                "description": {"type": "string", "description": "Brief description of what this test case validates"}
+                                            },
+                                            "required": ["input", "expected_output", "description"]
+                                        },
+                                        "description": "Generate 2-3 test cases as objects with input, expected_output, and description fields. Always provide meaningful test cases."
                                     },
                                     "estimated_minutes": {
                                         "type": "integer",
@@ -272,20 +280,20 @@ CRITICAL RULES - MUST FOLLOW EXACTLY:
 5. **Required Fields**:
    - concepts: ALWAYS provide 3-5 programming concepts (loops, arrays, conditionals, etc.)
    - test_cases: ALWAYS generate 2-3 meaningful test cases (normal case, edge case, boundary case)
-   - explanation: ALWAYS provide algorithm/approach explanation unless truly not applicable
+   - explanation: ALWAYS provide test case explanation showing how sample output was generated
    - hints: Can be empty array if not needed
 
-6. **Explanation Requirements**:
-   - Explain the algorithm or approach to solve the problem
-   - Mention key programming concepts or methods
-   - Describe the logic flow or steps involved
-   - Examples: "Use a loop to iterate through the list and check each number using modulo operator"
+6. **Explanation Requirements (NATURAL, NON-TECHNICAL)**:
+   - Explain what happened to the data WITHOUT coding terms
+   - NO words like: function, iterate, append, check, loop, algorithm, code, program
+   - Use natural language to describe the transformation
+   - Examples: "In the list [1,2,3,4,5,6,7,8,9,10], the even numbers are 2,4,6,8,10, which form the result"
 
 7. **Test Cases Requirements**:
-   - Generate realistic test scenarios
+   - Generate realistic test scenarios as objects with input, expected_output, and description
    - Include normal cases, edge cases (empty list, single element)
-   - Format: "Test with [input] → Expected: [output]"
-   - Examples: "Test with empty list → Expected: []", "Test with [1,3,5] → Expected: []"
+   - Format: {"input": "test_input", "expected_output": "expected_result", "description": "what this tests"}
+   - Examples: {"input": "[]", "expected_output": "[]", "description": "Edge case with empty list"}
 
 8. **DOUBLE CHECK RULE**:
    Before finalizing, verify that description field contains ONLY instructions, not data."""
@@ -472,60 +480,94 @@ Process each problem completely with all details."""
                 problem["concepts"] = concepts
                 logger.info(f"Added concepts: {concepts}")
             
-            # Generate explanation if missing
+            # Generate explanation if missing (focus on test case explanation)
             if not problem.get("explanation") or problem.get("explanation", "").strip() == "":
                 title = problem.get("title", "").lower()
-                if "filter" in title and "even" in title:
-                    problem["explanation"] = "Use a loop to iterate through the list and check each number using the modulo operator (%). Numbers divisible by 2 are even."
-                elif "create" in title and "list" in title and "input" in title:
-                    problem["explanation"] = "Use input() function to prompt the user, then append each entered number to the list using the append() method."
-                elif ("maximum" in title and "minimum" in title) or ("max" in title and "min" in title):
-                    problem["explanation"] = "Iterate through the list keeping track of the largest and smallest values seen so far by comparing each element."
-                elif "average" in title or "calculate" in title:
-                    problem["explanation"] = "Sum all numbers in the list using a loop, then divide the total by the length of the list to get the average."
-                elif "count" in title and "occurrence" in title:
-                    problem["explanation"] = "Iterate through the list and increment a counter each time the target number is found."
-                elif "reverse" in title:
-                    problem["explanation"] = "Create a new list and use a loop to append elements from the original list in reverse order, starting from the last index."
-                else:
-                    problem["explanation"] = "Break down the problem into steps and use appropriate programming constructs like loops, conditionals, and built-in functions."
+                sample_input = problem.get("sample_input", "")
+                sample_output = problem.get("sample_output", "")
                 
-                logger.info(f"Generated explanation: {problem['explanation']}")
+                # Generate natural, non-technical test case explanations
+                if "filter" in title and "even" in title and sample_input and sample_output:
+                    problem["explanation"] = f"In the given list {sample_input}, the even numbers are those divisible by 2. Out of these elements, the even numbers are: {sample_output}."
+                elif "create" in title and "list" in title and "input" in title:
+                    problem["explanation"] = "Numbers are entered one by one and collected together to form the final list."
+                elif ("maximum" in title and "minimum" in title) or ("max" in title and "min" in title):
+                    problem["explanation"] = f"In the list {sample_input}, the largest and smallest values are identified and displayed as shown in the output."
+                elif "average" in title or "calculate" in title:
+                    problem["explanation"] = f"In the list {sample_input}, all numbers are added together and divided by how many numbers there are to get the average."
+                elif "count" in title and "occurrence" in title:
+                    problem["explanation"] = f"In the given list, we look for how many times the target number appears to get the count shown in the output."
+                elif "reverse" in title:
+                    problem["explanation"] = f"The list {sample_input} is rearranged in opposite order to get {sample_output}."
+                else:
+                    # Generic natural explanation
+                    if sample_input and sample_output:
+                        problem["explanation"] = f"In the given input {sample_input}, the transformation results in the output {sample_output}."
+                    else:
+                        problem["explanation"] = "The output shows the result after transforming the input according to the problem requirements."
+                
+                logger.info(f"Generated test case explanation: {problem['explanation']}")
+            
+            # Convert string-based test cases to dictionary format if needed
+            test_cases = problem.get("test_cases", [])
+            if test_cases and isinstance(test_cases[0], str):
+                logger.info("Converting string-based test cases to dictionary format")
+                converted_test_cases = []
+                for i, test_case in enumerate(test_cases):
+                    # Parse string format "Test with [input] → Expected: [output]"
+                    if "→" in test_case and "Expected:" in test_case:
+                        parts = test_case.split("→")
+                        input_part = parts[0].replace("Test with", "").strip()
+                        output_part = parts[1].replace("Expected:", "").strip()
+                        converted_test_cases.append({
+                            "input": input_part,
+                            "expected_output": output_part,
+                            "description": f"Test case {i+1}"
+                        })
+                    else:
+                        # Fallback for unrecognized format
+                        converted_test_cases.append({
+                            "input": "test_input",
+                            "expected_output": "expected_output",
+                            "description": test_case
+                        })
+                problem["test_cases"] = converted_test_cases
+                logger.info(f"Converted test cases to dictionary format: {converted_test_cases}")
             
             # Generate test cases if missing
-            if not problem.get("test_cases") or len(problem.get("test_cases", [])) == 0:
+            elif not problem.get("test_cases") or len(problem.get("test_cases", [])) == 0:
                 title = problem.get("title", "").lower()
                 test_cases = []
                 
                 if "filter" in title and "even" in title:
                     test_cases = [
-                        "Test with [1,2,3,4,5] → Expected: [2,4]",
-                        "Test with [1,3,5,7] → Expected: []",
-                        "Test with empty list → Expected: []"
+                        {"input": "[1,2,3,4,5]", "expected_output": "[2,4]", "description": "Normal case with mixed odd and even numbers"},
+                        {"input": "[1,3,5,7]", "expected_output": "[]", "description": "Edge case with only odd numbers"},
+                        {"input": "[]", "expected_output": "[]", "description": "Edge case with empty list"}
                     ]
                 elif "create" in title and "list" in title:
                     test_cases = [
-                        "Test with inputs 1,2,3,4,5 → Expected: [1,2,3,4,5]",
-                        "Test with negative numbers → Expected: list with negative numbers",
-                        "Test with decimal numbers → Expected: list with decimal numbers"
+                        {"input": "1,2,3,4,5", "expected_output": "[1,2,3,4,5]", "description": "Normal case with positive integers"},
+                        {"input": "-1,-2,3", "expected_output": "[-1,-2,3]", "description": "Case with negative numbers"},
+                        {"input": "10", "expected_output": "[10]", "description": "Single number input"}
                     ]
                 elif "maximum" in title and "minimum" in title:
                     test_cases = [
-                        "Test with [1,5,3,9,2] → Expected: Max=9, Min=1",
-                        "Test with [5] → Expected: Max=5, Min=5",
-                        "Test with negative numbers → Expected: correct max and min"
+                        {"input": "[1,5,3,9,2]", "expected_output": "Max=9, Min=1", "description": "Normal case with unsorted numbers"},
+                        {"input": "[5]", "expected_output": "Max=5, Min=5", "description": "Single element case"},
+                        {"input": "[-1,-5,-3]", "expected_output": "Max=-1, Min=-5", "description": "All negative numbers"}
                     ]
                 elif "average" in title:
                     test_cases = [
-                        "Test with [1,2,3,4,5] → Expected: 3.0",
-                        "Test with [10] → Expected: 10.0",
-                        "Test with [2,4,6] → Expected: 4.0"
+                        {"input": "[1,2,3,4,5]", "expected_output": "3.0", "description": "Normal case with consecutive numbers"},
+                        {"input": "[10]", "expected_output": "10.0", "description": "Single number case"},
+                        {"input": "[2,4,6]", "expected_output": "4.0", "description": "Even numbers only"}
                     ]
                 else:
                     test_cases = [
-                        "Test with normal input → Expected: correct output",
-                        "Test with edge case → Expected: handle gracefully",
-                        "Test with empty/minimal input → Expected: appropriate response"
+                        {"input": "normal_input", "expected_output": "expected_result", "description": "Standard test case"},
+                        {"input": "edge_case_input", "expected_output": "edge_result", "description": "Edge case validation"},
+                        {"input": "minimal_input", "expected_output": "minimal_result", "description": "Minimal input test"}
                     ]
                 
                 problem["test_cases"] = test_cases

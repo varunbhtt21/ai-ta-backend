@@ -15,6 +15,8 @@ from app.services.ai_tutoring_engine import ai_tutoring_engine
 from app.services.input_classifier import input_classifier
 from app.services.token_tracker import token_tracker
 from app.services.context_compression import context_compression_manager
+from app.services.resume_detection import resume_detection_service
+from app.services.smart_response_generator import smart_response_generator, ResponseGenerationContext
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,8 @@ class SessionManager:
         self.input_classifier = input_classifier
         self.token_tracker = token_tracker
         self.context_compression_manager = context_compression_manager
+        self.resume_detection_service = resume_detection_service
+        self.smart_response_generator = smart_response_generator
     
     async def start_or_resume_session(
         self, 
@@ -93,6 +97,7 @@ class SessionManager:
         
         return SessionResponse(
             session_id=str(session.id),
+            assignment_id=session.assignment_id,
             status=session.status,
             message="Session ready",
             current_problem=current_problem,
@@ -100,6 +105,92 @@ class SessionManager:
             session_number=session.session_number,
             compression_level=session.compression_level
         )
+    
+    async def start_intelligent_session(
+        self, 
+        user_id: str, 
+        request: SessionRequest
+    ) -> Dict[str, Any]:
+        """Start session with intelligent resume detection and context-aware welcome"""
+        
+        # Step 1: Intelligent resume detection
+        resume_analysis = await self.resume_detection_service.determine_resume_type(
+            user_id=user_id,
+            assignment_id=request.assignment_id
+        )
+        
+        # Step 2: Create or resume session based on analysis
+        if resume_analysis["should_resume"] and resume_analysis.get("recommended_session_id"):
+            # Resume specific session
+            enhanced_request = SessionRequest(
+                assignment_id=request.assignment_id,
+                resume_session=True,
+                session_id=resume_analysis["recommended_session_id"]
+            )
+        elif resume_analysis["should_resume"]:
+            # Resume most recent session
+            enhanced_request = SessionRequest(
+                assignment_id=request.assignment_id,
+                resume_session=True,
+                session_id=None
+            )
+        else:
+            # Start fresh session
+            enhanced_request = SessionRequest(
+                assignment_id=request.assignment_id,
+                resume_session=False,
+                session_id=None
+            )
+        
+        # Use existing session creation logic
+        session_response = await self.start_or_resume_session(user_id, enhanced_request)
+        
+        # Step 3: Generate intelligent welcome message based on resume type
+        welcome_message = self._generate_intelligent_welcome(
+            resume_analysis["resume_type"],
+            resume_analysis.get("context", {})
+        )
+        
+        # Enhance response with intelligent context
+        return {
+            "session_id": session_response.session_id,
+            "assignment_id": session_response.assignment_id,
+            "status": session_response.status,
+            "message": welcome_message,
+            "current_problem": session_response.current_problem,
+            "total_problems": session_response.total_problems,
+            "session_number": session_response.session_number,
+            "compression_level": session_response.compression_level,
+            "resume_type": resume_analysis["resume_type"],
+            "intelligence_enabled": True
+        }
+    
+    def _generate_intelligent_welcome(self, resume_type: str, context: Dict[str, Any]) -> str:
+        """Generate context-aware welcome message based on resume type"""
+        
+        from app.models.enums import ResumeType
+        
+        try:
+            resume_enum = ResumeType(resume_type)
+        except ValueError:
+            resume_enum = ResumeType.FRESH_START
+        
+        if resume_enum == ResumeType.FRESH_START:
+            return "Welcome! I'm excited to help you learn programming. Let's start with your first problem!"
+        
+        elif resume_enum == ResumeType.MID_CONVERSATION:
+            last_problem = context.get("last_problem_worked_on", "the current problem")
+            return f"Welcome back! I see we were working on {last_problem}. Ready to continue where we left off?"
+        
+        elif resume_enum == ResumeType.BETWEEN_PROBLEMS:
+            completed_problems = context.get("completed_problems", 0)
+            return f"Great to see you again! You've completed {completed_problems} problems. Ready for the next challenge?"
+        
+        elif resume_enum == ResumeType.COMPLETED_ASSIGNMENT:
+            return "Welcome back! I see you've completed this assignment. Would you like to review any problems or work on additional challenges?"
+        
+        else:
+            return "Welcome back! I'm here to help you with your programming journey."
     
     async def process_student_input(
         self,
@@ -392,7 +483,7 @@ class SessionManager:
         )
         
         # Build compressed prompt context
-        compressed_summary = self.context_compression_manager.build_compressed_prompt_context(
+        compressed_summary = await self.context_compression_manager.build_compressed_prompt_context(
             compression_result, await self._get_current_problem_data(session)
         )
         

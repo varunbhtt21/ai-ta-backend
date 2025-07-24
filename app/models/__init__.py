@@ -9,6 +9,7 @@ from .enums import (
     CompressionReason,
     TeachingStyle,
     CodeCompetencyLevel,
+    ResumeType,
 )
 
 from .base import (
@@ -54,6 +55,7 @@ __all__ = [
     "CompressionReason",
     "TeachingStyle",
     "CodeCompetencyLevel",
+    "ResumeType",
     
     # Base models
     "BaseDocument",

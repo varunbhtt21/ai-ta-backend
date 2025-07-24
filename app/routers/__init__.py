@@ -1,3 +1,3 @@
-from . import auth, sessions, assignments, progress, analytics, context, learning_profiles, file_uploads, instructor_dashboard
+from . import auth, assignments, progress, analytics, context, learning_profiles, file_uploads, instructor_dashboard, intelligent_sessions, structured_sessions
 
-__all__ = ["auth", "sessions", "assignments", "progress", "analytics", "context", "learning_profiles", "file_uploads", "instructor_dashboard"]
+__all__ = ["auth", "assignments", "progress", "analytics", "context", "learning_profiles", "file_uploads", "instructor_dashboard", "intelligent_sessions", "structured_sessions"]

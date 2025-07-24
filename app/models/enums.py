@@ -67,3 +67,10 @@ class CodeCompetencyLevel(str, Enum):
     INTERMEDIATE = "intermediate"
     ADVANCED = "advanced"
     EXPERT = "expert"
+
+
+class ResumeType(str, Enum):
+    FRESH_START = "fresh_start"
+    MID_CONVERSATION = "mid_conversation"
+    BETWEEN_PROBLEMS = "between_problems"
+    COMPLETED_ASSIGNMENT = "completed_assignment"
