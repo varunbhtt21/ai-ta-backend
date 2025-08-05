@@ -53,6 +53,7 @@ dependencies = [
     "orjson>=3.9.0", # Fast JSON serialization
     "bcrypt",
     "aiofiles>=24.1.0",
+    "pytest>=8.4.1",
 ]
 
 [project.optional-dependencies]

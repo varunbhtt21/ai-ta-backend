@@ -47,13 +47,14 @@ class ProgressService:
         if existing:
             # Update existing record
             updates = {}
+            set_fields = {}
             
             if status:
-                updates["status"] = status.value
+                set_fields["status"] = status.value
                 if status == ProblemStatus.COMPLETED:
-                    updates["completed_at"] = datetime.utcnow()
+                    set_fields["completed_at"] = datetime.utcnow()
                 elif status == ProblemStatus.IN_PROGRESS and not existing.get("started_at"):
-                    updates["started_at"] = datetime.utcnow()
+                    set_fields["started_at"] = datetime.utcnow()
             
             if code_submission:
                 # Add new code submission
@@ -70,7 +71,7 @@ class ProgressService:
                 updates["$inc"] = {"attempts": 1}
                 
                 if is_correct:
-                    updates["final_solution"] = code_submission
+                    set_fields["final_solution"] = code_submission
             
             if hints_used > 0:
                 updates["$inc"] = updates.get("$inc", {})
@@ -80,8 +81,13 @@ class ProgressService:
                 updates["$inc"] = updates.get("$inc", {})
                 updates["$inc"]["time_spent_minutes"] = time_increment
             
-            updates["session_id"] = session_id
-            updates["updated_at"] = datetime.utcnow()
+            # Always update these fields
+            set_fields["session_id"] = session_id
+            set_fields["updated_at"] = datetime.utcnow()
+            
+            # Add $set operator for regular field updates
+            if set_fields:
+                updates["$set"] = set_fields
             
             await db.student_progress.update_one(
                 {"_id": existing["_id"]},
@@ -369,6 +375,58 @@ class ProgressService:
             })
         
         return results
+    
+    async def is_problem_completed(
+        self,
+        user_id: str,
+        assignment_id: str,
+        problem_number: int
+    ) -> bool:
+        """Check if a specific problem has been completed with correct solution"""
+        db = await self._get_db()
+        
+        doc = await db.student_progress.find_one({
+            "user_id": user_id,
+            "assignment_id": assignment_id,
+            "problem_number": problem_number,
+            "status": ProblemStatus.COMPLETED.value,
+            "final_solution": {"$ne": None}  # Must have a correct solution
+        })
+        
+        return doc is not None
+    
+    async def get_highest_completed_problem(
+        self,
+        user_id: str,
+        assignment_id: str
+    ) -> int:
+        """Get the highest problem number that has been completed"""
+        db = await self._get_db()
+        
+        # Find the highest completed problem number
+        pipeline = [
+            {
+                "$match": {
+                    "user_id": user_id,
+                    "assignment_id": assignment_id,
+                    "status": ProblemStatus.COMPLETED.value,
+                    "final_solution": {"$ne": None}
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "max_completed": {"$max": "$problem_number"}
+                }
+            }
+        ]
+        
+        result = await db.student_progress.aggregate(pipeline).to_list(1)
+        
+        if result and result[0]["max_completed"] is not None:
+            return result[0]["max_completed"]
+        
+        return 0  # No problems completed yet
 
 
 progress_service = ProgressService()

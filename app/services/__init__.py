@@ -3,7 +3,6 @@ from .conversation_service import conversation_service
 from .progress_service import progress_service
 from .session_manager import session_manager
 from .openai_client import openai_client
-from .ai_tutoring_engine import ai_tutoring_engine
 from .input_classifier import input_classifier
 from .token_tracker import token_tracker
 from .context_compression import context_compression_manager
@@ -18,7 +17,6 @@ __all__ = [
     "progress_service",
     "session_manager",
     "openai_client",
-    "ai_tutoring_engine",
     "input_classifier",
     "token_tracker",
     "context_compression_manager",

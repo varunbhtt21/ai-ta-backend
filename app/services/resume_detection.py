@@ -40,15 +40,20 @@ class ResumeDetectionService:
         Analyze user's session history to determine optimal resume strategy
         """
         
+        logger.info(f"🕵️ [RESUME_DETECTION] Starting analysis for user {user_id}, assignment {assignment_id}")
+        
         try:
             # Get user's session history for this assignment
+            logger.info(f"🕵️ [RESUME_DETECTION] Getting user session history")
             recent_sessions = await self.session_service.get_user_assignment_sessions(
                 user_id=user_id,
                 assignment_id=assignment_id,
                 limit=10  # Analyze last 10 sessions
             )
+            logger.info(f"🕵️ [RESUME_DETECTION] Found {len(recent_sessions)} recent sessions")
             
             if not recent_sessions:
+                logger.info(f"🕵️ [RESUME_DETECTION] No previous sessions found, recommending fresh start")
                 return self._create_resume_analysis(
                     ResumeType.FRESH_START,
                     should_resume=False,
@@ -59,9 +64,12 @@ class ResumeDetectionService:
             # Get the most recent session
             latest_session = recent_sessions[0]
             session_age = self._calculate_session_age(latest_session)
+            logger.info(f"🕵️ [RESUME_DETECTION] Latest session age: {session_age.total_seconds() / 3600:.2f} hours")
             
             # Check if there's an active session
+            logger.info(f"🕵️ [RESUME_DETECTION] Checking for active session")
             active_session = await self._find_active_session(user_id, assignment_id)
+            logger.info(f"🕵️ [RESUME_DETECTION] Active session found: {bool(active_session)}")
             
             if active_session:
                 # Determine if we should resume the active session
@@ -278,14 +286,21 @@ class ResumeDetectionService:
                 "assignment_id": assignment_id
             }).to_list(None)
             
+            logger.info(f"📊 [RESUME_DETECTION] Found {len(progress_records)} progress records")
+            for i, record in enumerate(progress_records):
+                logger.info(f"   📝 Progress {i+1}: Problem {record.get('problem_number')}, Status: {record.get('status')}")
+            
             completed_problems = len([p for p in progress_records if p.get("status") == ProblemStatus.COMPLETED.value])
             in_progress_problems = len([p for p in progress_records if p.get("status") == ProblemStatus.IN_PROGRESS.value])
             
-            return {
+            context = {
                 "completed_problems": completed_problems,
                 "in_progress_problems": in_progress_problems,
                 "total_attempted": len(progress_records)
             }
+            
+            logger.info(f"📊 [RESUME_DETECTION] Progress context:", context)
+            return context
         
         except Exception as e:
             logger.warning(f"Failed to get progress context: {e}")

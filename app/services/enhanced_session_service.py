@@ -7,19 +7,24 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from bson import ObjectId
 import logging
+import asyncio
 
 from app.database.connection import get_database
 from app.models import (
     Session, SessionStatus, ContextCompressionLevel, 
     SessionRequest, SessionResponse, MessageRequest,
     ConversationDocument, StudentProgressDocument,
-    Assignment, Problem, User, ConversationMessage, MessageType
+    Assignment, Problem, User, ConversationMessage, MessageType,
+    ProblemStatus
 )
 from app.services.structured_tutoring_engine import (
     StructuredTutoringEngine, StudentState, TutoringMode
 )
 from app.services.assignment_service import assignment_service
 from app.services.auth_service import auth_service
+from app.services.session_manager import session_manager
+from app.services.progress_service import progress_service
+from app.utils.response_formatter import format_response
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -31,70 +36,106 @@ class EnhancedSessionService:
     def __init__(self):
         self.db = None
         self.structured_engine = StructuredTutoringEngine()
+        self._session_creation_locks: Dict[str, asyncio.Lock] = {}
     
     async def _get_db(self):
         if self.db is None:
             self.db = await get_database()
         return self.db
     
+    def _get_session_lock(self, user_id: str, assignment_id: str) -> asyncio.Lock:
+        """Get or create a lock for this user+assignment combination"""
+        key = f"{user_id}:{assignment_id}"
+        if key not in self._session_creation_locks:
+            self._session_creation_locks[key] = asyncio.Lock()
+        return self._session_creation_locks[key]
+    
     async def start_intelligent_session(self, user_id: str, assignment_id: str) -> Dict[str, Any]:
         """Start an intelligent session with structured tutoring"""
         
-        try:
-            db = await self._get_db()
+        logger.info(f"🧠 [ENHANCED_SESSION] Starting intelligent session for user {user_id}, assignment {assignment_id}")
+        
+        # Use lock to prevent concurrent session creation
+        lock = self._get_session_lock(user_id, assignment_id)
+        
+        async with lock:
+            logger.info(f"🔒 [SESSION_LOCK] Acquired lock for user {user_id}, assignment {assignment_id}")
             
-            # Check for existing active session
-            existing_session = await self.get_active_session(user_id, assignment_id)
-            if existing_session:
-                # Resume existing session
-                return await self._resume_session(existing_session)
-            
-            # Get assignment details
-            assignment = await assignment_service.get_assignment(assignment_id)
-            if not assignment:
-                raise ValueError(f"Assignment {assignment_id} not found")
-            
-            # Get user details
-            user = await auth_service.get_user_by_id(user_id)
-            if not user:
-                raise ValueError(f"User {user_id} not found")
-            
-            # Create new session
-            session = await self.create_session(user_id, assignment_id)
-            
-            # Load conversation history from previous sessions
-            conversation_history = await self._load_conversation_history(user_id, assignment_id)
-            
-            # Determine current problem based on progress
-            current_problem_number = await self._get_current_problem_number(user_id, assignment_id)
-            current_problem = None
-            if current_problem_number <= len(assignment.problems):
-                current_problem = assignment.problems[current_problem_number - 1]
-            
-            # Generate welcome message using structured approach
-            welcome_response = await self._generate_welcome_message(
-                user, assignment, current_problem, conversation_history, session
-            )
-            
-            # Save welcome message to conversation
-            await self._save_message(
-                session.id, user_id, MessageType.ASSISTANT, welcome_response["message"]
-            )
-            
-            return {
-                "session_id": str(session.id),
-                "session_number": session.session_number,
-                "compression_level": session.compression_level.value,
-                "current_problem": current_problem_number,
-                "total_problems": len(assignment.problems),
-                "message": welcome_response["message"],
-                "student_state": welcome_response["student_state"],
-                "teaching_notes": welcome_response.get("teaching_notes", [])
-            }
-            
-        except Exception as e:
-            logger.error(f"Error starting intelligent session: {e}")
-            raise
+            try:
+                db = await self._get_db()
+                
+                # STEP 1: Clean up any existing active sessions to prevent duplicates
+                logger.info(f"🧹 [ENHANCED_SESSION] Cleaning up any existing active sessions")
+                cleanup_count = await self._cleanup_active_sessions(user_id, assignment_id)
+                if cleanup_count > 0:
+                    logger.info(f"🧹 [ENHANCED_SESSION] Cleaned up {cleanup_count} existing active sessions")
+                
+                # STEP 2: Check again for active sessions (should be none now)
+                logger.info(f"🔍 [ENHANCED_SESSION] Checking for existing active session after cleanup")
+                existing_session = await self.get_active_session(user_id, assignment_id)
+                if existing_session:
+                    logger.warning(f"🚨 [ENHANCED_SESSION] Active session still exists after cleanup: {existing_session.id}, resuming")
+                    # Resume existing session
+                    return await self._resume_session(existing_session)
+                
+                logger.info(f"🆕 [ENHANCED_SESSION] No existing session found, creating new one")
+                
+                # Get assignment details
+                assignment = await assignment_service.get_assignment(assignment_id)
+                if not assignment:
+                    raise ValueError(f"Assignment {assignment_id} not found")
+                
+                # Get user details
+                user = await auth_service.get_user_by_id(user_id)
+                if not user:
+                    raise ValueError(f"User {user_id} not found")
+                
+                # Create new session
+                session = await self.create_session(user_id, assignment_id)
+                logger.info(f"🆕 [SESSION_LOCK] Created new session: {session.id}")
+                
+                # Load conversation history from previous sessions
+                conversation_history = await self._load_conversation_history(user_id, assignment_id)
+                
+                # Determine current problem based on progress
+                logger.info(f"🎯 [ENHANCED_SESSION] Determining current problem")
+                current_problem_number = await self._get_current_problem_number(user_id, assignment_id)
+                logger.info(f"🎯 [ENHANCED_SESSION] Current problem number: {current_problem_number}")
+                
+                current_problem = None
+                if current_problem_number <= len(assignment.problems):
+                    current_problem = assignment.problems[current_problem_number - 1]
+                    logger.info(f"📚 [ENHANCED_SESSION] Current problem: {current_problem.title}")
+                else:
+                    logger.info(f"🏁 [ENHANCED_SESSION] All problems completed (current: {current_problem_number}, total: {len(assignment.problems)})")
+                
+                # Generate welcome message using structured approach
+                welcome_response = await self._generate_welcome_message(
+                    user, assignment, current_problem, conversation_history, session
+                )
+                
+                # Save welcome message to conversation
+                await self._save_message(
+                    session.id, user_id, MessageType.ASSISTANT, welcome_response["message"]
+                )
+                
+                session_data = {
+                    "session_id": str(session.id),
+                    "session_number": session.session_number,
+                    "compression_level": session.compression_level.value,
+                    "current_problem": current_problem_number,
+                    "total_problems": len(assignment.problems),
+                    "message": welcome_response["message"],
+                    "student_state": welcome_response["student_state"],
+                    "teaching_notes": welcome_response.get("teaching_notes", [])
+                }
+                
+                logger.info(f"✅ [ENHANCED_SESSION] Session created successfully:", session_data)
+                return session_data
+                
+            except Exception as e:
+                logger.error(f"💥 [SESSION_LOCK] Error starting intelligent session: {e}")
+                raise
     
     async def process_student_message(
         self, 
@@ -161,23 +202,117 @@ class EnhancedSessionService:
             logger.info(f"📊 ENHANCED_SESSION_SERVICE: New student state: {structured_response.student_state}")
             logger.info(f"🎯 ENHANCED_SESSION_SERVICE: Tutoring mode: {structured_response.tutoring_mode}")
             
-            # Check if problem was completed and handle progression
-            if structured_response.student_state == StudentState.PROBLEM_COMPLETED:
-                logger.info("🎉 ENHANCED_SESSION_SERVICE: Problem completed! Updating progress...")
-                await self._update_problem_progress(
-                    session.user_id, 
-                    session.assignment_id, 
-                    current_problem_number
+            # CRITICAL: Handle progression validation requests
+            if structured_response.response_text == "VALIDATION_REQUIRED_FOR_PROGRESSION":
+                logger.info("🛑 ENHANCED_SESSION_SERVICE: Validation required for progression")
+                
+                # Check if current problem is actually completed
+                is_completed = await progress_service.is_problem_completed(
+                    session.user_id, session.assignment_id, current_problem_number
                 )
+                
+                logger.info(f"🔍 ENHANCED_SESSION_SERVICE: Problem {current_problem_number} completed: {is_completed}")
+                
+                if is_completed:
+                    logger.info("✅ ENHANCED_SESSION_SERVICE: Problem completed - allowing progression")
+                    # Allow progression - get next problem
+                    next_problem_number = current_problem_number + 1
+                    if next_problem_number <= len(assignment.problems):
+                        next_problem = assignment.problems[next_problem_number - 1]
+                        
+                        # Update structured response to present next problem
+                        structured_response.response_text = await self._generate_problem_presentation(
+                            next_problem, next_problem_number, user_input, conversation_history
+                        )
+                        structured_response.student_state = StudentState.PROBLEM_PRESENTED
+                        structured_response.tutoring_mode = TutoringMode.APPROACH_INQUIRY
+                        structured_response.next_expected_input = "approach_explanation"
+                        structured_response.teaching_notes = ["Problem completed - presenting next problem"]
+                        
+                        logger.info(f"🎯 ENHANCED_SESSION_SERVICE: Presenting next problem: {next_problem.title}")
+                    else:
+                        # All problems completed
+                        completion_message = "🎉 Congratulations! You've completed all problems in this assignment!"
+                        structured_response.response_text = format_response(completion_message)
+                        structured_response.student_state = StudentState.PROBLEM_COMPLETED
+                        structured_response.tutoring_mode = TutoringMode.CELEBRATION
+                        structured_response.teaching_notes = ["All problems completed"]
+                        logger.info("🏁 ENHANCED_SESSION_SERVICE: All problems completed!")
+                else:
+                    logger.info("❌ ENHANCED_SESSION_SERVICE: Problem not completed - blocking progression")
+                    # Block progression with educational message
+                    blocking_message = f"I see you want to move to the next problem, but you need to complete the current problem first. Please submit your working code for **{current_problem.title}** and I'll help you get it working correctly."
+                    structured_response.response_text = format_response(blocking_message)
+                    structured_response.student_state = StudentState.WORKING_ON_CODE
+                    structured_response.tutoring_mode = TutoringMode.GUIDED_QUESTIONING
+                    structured_response.next_expected_input = "code_submission"
+                    structured_response.teaching_notes = ["Blocked progression - current problem not completed"]
+            
+            # Check if problem was completed and handle progression
+            elif structured_response.student_state == StudentState.PROBLEM_COMPLETED:
+                logger.info("🎉 ENHANCED_SESSION_SERVICE: Problem completed! Updating progress...")
+                
+                # Mark the problem as completed with the correct solution
+                # The structured engine should have validated the code was correct
+                await progress_service.create_or_update_progress(
+                    user_id=session.user_id,
+                    assignment_id=session.assignment_id,
+                    session_id=session_id,
+                    problem_number=current_problem_number,
+                    status=ProblemStatus.COMPLETED,
+                    code_submission=user_input,  # Save the correct code
+                    is_correct=True,
+                    time_increment=0.0
+                )
+                
+                logger.info(f"✅ ENHANCED_SESSION_SERVICE: Problem {current_problem_number} marked as completed")
             
             # Check if user is ready to start next problem
-            elif structured_response.student_state == StudentState.READY_TO_START and current_state == StudentState.PROBLEM_COMPLETED:
+            elif structured_response.student_state == StudentState.READY_TO_START and (
+                current_state == StudentState.PROBLEM_COMPLETED or 
+                structured_response.tutoring_mode == TutoringMode.PROBLEM_PRESENTATION
+            ):
                 logger.info("🚀 ENHANCED_SESSION_SERVICE: User ready for next problem!")
+                logger.info(f"🔄 ENHANCED_SESSION_SERVICE: State transition - Current: {current_state}, New: {structured_response.student_state}")
+                
+                # First mark the current problem as completed if not already done
+                logger.info(f"✅ ENHANCED_SESSION_SERVICE: Ensuring problem {current_problem_number} is marked completed")
+                await self._update_problem_progress(session.user_id, session.assignment_id, current_problem_number)
+                
                 # Get the updated current problem number after progression
                 updated_problem_number = await self._get_current_problem_number(
                     session.user_id, session.assignment_id
                 )
                 logger.info(f"📊 ENHANCED_SESSION_SERVICE: Updated problem number: {updated_problem_number}")
+                logger.info(f"📊 ENHANCED_SESSION_SERVICE: Total problems in assignment: {len(assignment.problems)}")
+                logger.info(f"📊 ENHANCED_SESSION_SERVICE: Checking condition: {updated_problem_number} <= {len(assignment.problems)} = {updated_problem_number <= len(assignment.problems)}")
+                
+                # If we have a next problem, present it
+                if updated_problem_number <= len(assignment.problems):
+                    next_problem = assignment.problems[updated_problem_number - 1]
+                    
+                    logger.info(f"🎯 ENHANCED_SESSION_SERVICE: Found next problem: {next_problem.title}")
+                    
+                    # Generate dynamic problem presentation via OpenAI
+                    structured_response.response_text = await self._generate_problem_presentation(
+                        next_problem, updated_problem_number, user_input, conversation_history
+                    )
+                    
+                    structured_response.student_state = StudentState.PROBLEM_PRESENTED
+                    structured_response.tutoring_mode = TutoringMode.APPROACH_INQUIRY
+                    structured_response.next_expected_input = "approach_explanation"
+                    
+                    logger.info(f"🎯 ENHANCED_SESSION_SERVICE: Presenting next problem: {next_problem.title}")
+                else:
+                    # All problems completed
+                    logger.info(f"🏁 ENHANCED_SESSION_SERVICE: All problems completed! ({updated_problem_number} > {len(assignment.problems)})")
+                    structured_response.response_text = await self._generate_assignment_completion_message(
+                        user_input, assignment, conversation_history
+                    )
+                    structured_response.student_state = StudentState.PROBLEM_COMPLETED
+                    structured_response.tutoring_mode = TutoringMode.CELEBRATION
+                    structured_response.next_expected_input = "assignment_complete"
+                    logger.info("🏁 ENHANCED_SESSION_SERVICE: Set state to assignment completed")
                 
                 # Update response with current problem number for frontend
                 structured_response.current_problem = updated_problem_number
@@ -274,12 +409,63 @@ Are you ready to start with the first problem?"""
             if msg.message_type == MessageType.ASSISTANT
         ]
         
+        # Get last few user messages to understand progression
+        last_user_messages = [
+            msg for msg in conversation_history[-5:] 
+            if msg.message_type == MessageType.USER
+        ]
+        
+        # Analyze latest input first
+        latest_lower = latest_input.lower().strip()
+        
+        # STRICT LOGIC-FIRST: Code submission detection - check logic approval status first
+        code_indicators = ['=', 'for ', 'while ', 'if ', 'def ', 'print(', 'input(', 'append(', 'range(', 'import ', 'from ', 'class ', 'try:', 'except:', 'len(']
+        if any(indicator in latest_input for indicator in code_indicators):
+            # Check if logic was previously approved by looking for approval keywords in recent AI messages
+            logic_approved = False
+            for ai_msg in last_ai_messages[-5:]:  # Check last 5 AI messages for approval
+                ai_content_lower = ai_msg.content.lower()
+                approval_keywords = [
+                    'excellent logic', 'perfect logic', 'great logic', 'correct logic', 'good logic',
+                    'approved', 'now convert', 'now implement', 'write the code',
+                    'code it up', 'implement it', 'time to code', 'convert your logic',
+                    'implement your approach', 'translate your logic', 'turn your approach'
+                ]
+                if any(keyword in ai_content_lower for keyword in approval_keywords):
+                    logic_approved = True
+                    break
+            
+            if logic_approved:
+                return StudentState.CODE_REVIEW
+            else:
+                # STRICT: Code submitted without logic approval - redirect to awaiting approach
+                logger.info(f"🚫 ENHANCED_SESSION_SERVICE: Code detected without logic approval - redirecting to AWAITING_APPROACH")
+                logger.info(f"💬 ENHANCED_SESSION_SERVICE: Code input: '{latest_input[:100]}'")
+                return StudentState.AWAITING_APPROACH
+        
+        # Check for problem completion celebration context
         if last_ai_messages:
             last_ai_message = last_ai_messages[-1].content.lower()
             
-            # Check if we just presented a problem
-            if "how are you thinking to solve" in last_ai_message:
-                return StudentState.PROBLEM_PRESENTED
+            # If AI just said "ready for the next problem?" and user says ready-type response
+            if ("ready for the next problem" in last_ai_message or 
+                "excellent work" in last_ai_message or 
+                "correct" in last_ai_message):
+                ready_indicators = ['ready', 'yes', 'next', 'continue', 'ok', 'sure']
+                if any(indicator in latest_lower for indicator in ready_indicators):
+                    return StudentState.PROBLEM_COMPLETED
+            
+            # If AI said "Great! Let's move to the next problem" and user says ready
+            if ("let's move to the next problem" in last_ai_message and 
+                any(indicator in latest_lower for indicator in ['ready', 'yes', 'ok', 'sure', 'start', 'begin'])):
+                return StudentState.READY_TO_START
+            
+            # Check if we just presented a problem or asked for logic
+            if ("how are you thinking to solve" in last_ai_message or 
+                "logic first" in last_ai_message or
+                "natural language" in last_ai_message or
+                "explain your approach" in last_ai_message):
+                return StudentState.AWAITING_APPROACH
             
             # Check if we're waiting for code
             if "try writing the code" in last_ai_message or "can you try" in last_ai_message:
@@ -289,23 +475,41 @@ Are you ready to start with the first problem?"""
             if "hint" in last_ai_message or "look at" in last_ai_message:
                 return StudentState.WORKING_ON_CODE
         
-        # Analyze latest input
-        latest_lower = latest_input.lower().strip()
-        
-        # Code submission
-        code_indicators = ['=', 'for ', 'while ', 'if ', 'def ', 'print(', 'input(', 'append(']
-        if any(indicator in latest_input for indicator in code_indicators):
-            return StudentState.CODE_REVIEW
-        
         # Stuck/confusion
         stuck_indicators = ['not clear', 'don\'t understand', 'stuck', 'confused', 'not getting it']
         if any(indicator in latest_lower for indicator in stuck_indicators):
             return StudentState.STUCK_NEEDS_HELP
         
-        # Ready to start
+        # Next problem request
+        next_indicators = ['next problem', 'next', 'move on', 'continue', 'done', 'finished']
+        if any(indicator in latest_lower for indicator in next_indicators):
+            return StudentState.PROBLEM_COMPLETED
+        
+        # Ready to start (general case)
         ready_indicators = ['ready', 'start', 'begin', 'yes', 'ok', 'sure']
         if any(indicator in latest_lower for indicator in ready_indicators):
             return StudentState.READY_TO_START
+        
+        # Check if we're awaiting logic explanation based on recent AI messages
+        if last_ai_messages:
+            recent_ai_content = " ".join([msg.content.lower() for msg in last_ai_messages[-2:]])
+            if ("logic" in recent_ai_content or "natural language" in recent_ai_content or 
+                "explain your approach" in recent_ai_content or "thinking process" in recent_ai_content or
+                "how are you thinking" in recent_ai_content):
+                return StudentState.AWAITING_APPROACH
+        
+        # If we reach here and no specific state was determined, check if we should be waiting for logic
+        # This prevents students from bypassing the logic-first requirement
+        if len(conversation_history) > 2:
+            # Look for recent problem presentation without logic approval
+            recent_messages = conversation_history[-6:]  # Check last 6 messages
+            for msg in recent_messages:
+                if (msg.message_type == MessageType.ASSISTANT and 
+                    ("how are you thinking to solve" in msg.content.lower() or
+                     "explain your approach" in msg.content.lower() or
+                     "tell me your logic" in msg.content.lower())):
+                    # A problem was recently presented, student should provide logic first
+                    return StudentState.AWAITING_APPROACH
         
         return StudentState.WORKING_ON_CODE
     
@@ -359,50 +563,49 @@ Are you ready to start with the first problem?"""
         return conversation
     
     async def _get_current_problem_number(self, user_id: str, assignment_id: str) -> int:
-        """Get the current problem number for the user"""
-        db = await self._get_db()
+        """Get the current problem number for the user based on completion status"""
         
-        # Check progress records
-        progress = await db.student_progress.find_one({
-            "user_id": user_id,
-            "assignment_id": assignment_id
-        }, sort=[("updated_at", -1)])
+        logger.info(f"🔍 [ENHANCED_SESSION] Getting current problem for user {user_id}, assignment {assignment_id}")
         
-        if progress:
-            return progress.get("current_problem", 1)
-        
-        return 1  # Start with first problem
+        try:
+            # Get the highest completed problem number
+            highest_completed = await progress_service.get_highest_completed_problem(user_id, assignment_id)
+            
+            # Current problem is the next problem after the highest completed one
+            current_problem = highest_completed + 1
+            
+            logger.info(f"🎯 [ENHANCED_SESSION] Highest completed problem: {highest_completed}")
+            logger.info(f"🎯 [ENHANCED_SESSION] Current problem: {current_problem}")
+            
+            return current_problem
+            
+        except Exception as e:
+            logger.error(f"❌ [ENHANCED_SESSION] Error determining current problem: {e}")
+            return 1  # Fallback to first problem
     
     async def _update_problem_progress(self, user_id: str, assignment_id: str, completed_problem: int):
         """Update student progress when a problem is completed"""
-        db = await self._get_db()
         
-        logger.info(f"📈 ENHANCED_SESSION_SERVICE: Updating progress for user {user_id}")
-        logger.info(f"📚 ENHANCED_SESSION_SERVICE: Assignment {assignment_id}, completed problem {completed_problem}")
+        logger.info(f"📈 [ENHANCED_SESSION] Updating progress for user {user_id}")
+        logger.info(f"📚 [ENHANCED_SESSION] Assignment {assignment_id}, completed problem {completed_problem}")
         
-        # Calculate next problem number
-        next_problem = completed_problem + 1
-        
-        # Update or create progress record
-        await db.student_progress.update_one(
-            {
-                "user_id": user_id,
-                "assignment_id": assignment_id
-            },
-            {
-                "$set": {
-                    "current_problem": next_problem,
-                    "completed_problems": completed_problem,
-                    "updated_at": datetime.utcnow()
-                },
-                "$setOnInsert": {
-                    "created_at": datetime.utcnow()
-                }
-            },
-            upsert=True
-        )
-        
-        logger.info(f"✅ ENHANCED_SESSION_SERVICE: Progress updated - next problem: {next_problem}")
+        try:
+            # Use the progress service to properly mark the problem as completed
+            from app.models import ProblemStatus
+            
+            await progress_service.create_or_update_progress(
+                user_id=user_id,
+                assignment_id=assignment_id,
+                session_id=f"structured_session_{user_id}",  # placeholder session ID
+                problem_number=completed_problem,
+                status=ProblemStatus.COMPLETED,
+                time_increment=0.0  # Could track actual time in future
+            )
+            
+            logger.info(f"✅ [ENHANCED_SESSION] Successfully marked problem {completed_problem} as completed")
+            
+        except Exception as e:
+            logger.error(f"❌ [ENHANCED_SESSION] Failed to update progress: {e}")
     
     async def _save_message(self, session_id: str, user_id: str, message_type: MessageType, content: str):
         """Save a message to the conversation"""
@@ -421,22 +624,176 @@ Are you ready to start with the first problem?"""
     
     async def _handle_problem_completion(self, user_id: str, assignment_id: str, problem_number: int):
         """Handle when student completes a problem"""
-        db = await self._get_db()
         
-        # Update progress
-        await db.student_progress.update_one(
-            {"user_id": user_id, "assignment_id": assignment_id},
-            {
-                "$set": {
-                    "current_problem": problem_number + 1,
-                    "updated_at": datetime.utcnow()
-                },
-                "$push": {
-                    "completed_problems": problem_number
-                }
-            },
-            upsert=True
-        )
+        logger.info(f"🎉 [ENHANCED_SESSION] Handling problem completion for user {user_id}")
+        logger.info(f"📚 [ENHANCED_SESSION] Assignment {assignment_id}, problem {problem_number}")
+        
+        try:
+            # Use the progress service to properly mark the problem as completed
+            from app.models import ProblemStatus
+            
+            await progress_service.create_or_update_progress(
+                user_id=user_id,
+                assignment_id=assignment_id,
+                session_id=f"structured_session_{user_id}",  # placeholder session ID
+                problem_number=problem_number,
+                status=ProblemStatus.COMPLETED,
+                time_increment=0.0  # Could track actual time in future
+            )
+            
+            logger.info(f"✅ [ENHANCED_SESSION] Successfully completed problem {problem_number}")
+            
+        except Exception as e:
+            logger.error(f"❌ [ENHANCED_SESSION] Failed to complete problem: {e}")
+
+    async def _generate_problem_presentation(self, problem, problem_number: int, user_input: str, conversation_history) -> str:
+        """Generate dynamic problem presentation via OpenAI"""
+        
+        try:
+            from app.services.openai_client import openai_client
+            
+            # Build recent conversation context
+            recent_context = ""
+            if conversation_history and len(conversation_history) > 0:
+                recent_messages = conversation_history[-4:]  # Last 4 messages
+                recent_context = "\n".join([
+                    f"{msg.message_type.value}: {msg.content[:100]}..." if len(msg.content) > 100 else f"{msg.message_type.value}: {msg.content}"
+                    for msg in recent_messages
+                ])
+            
+            # Format test cases for display
+            test_cases_display = ""
+            if problem.test_cases and len(problem.test_cases) > 0:
+                test_cases_display = "\n\n**Sample Input/Output:**\n"
+                for i, test_case in enumerate(problem.test_cases[:2]):  # Show first 2 test cases
+                    if isinstance(test_case, dict):
+                        input_val = test_case.get('input', 'N/A')
+                        output_val = test_case.get('expected_output', 'N/A') 
+                        description = test_case.get('description', '')
+                        
+                        test_cases_display += f"\n**Example {i+1}:**\n"
+                        test_cases_display += f"Input: {input_val}\n"
+                        test_cases_display += f"Output: {output_val}\n"
+                        if description and description != 'N/A':
+                            test_cases_display += f"Explanation: {description}\n"
+            
+            prompt = f"""You are an AI programming tutor. The student just completed a problem and is ready for the next one.
+
+Recent conversation context:
+{recent_context}
+
+Student's latest message: "{user_input}"
+
+Now present this new problem in an encouraging way:
+
+Problem {problem_number}: {problem.title}
+Description: {problem.description}{test_cases_display}
+
+Generate a response that:
+1. Briefly acknowledges their progress/readiness
+2. Presents the new problem clearly with the provided examples
+3. Asks how they're thinking about approaching it
+
+Be encouraging and maintain the tutoring conversation flow. Keep it concise but engaging."""
+
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an encouraging programming tutor who helps students progress through problems."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300,
+                temperature=0.7
+            )
+            
+            if response and response.choices:
+                return response.choices[0].message.content.strip()
+            else:
+                # Fallback to structured format with test cases
+                test_cases_fallback = ""
+                if problem.test_cases and len(problem.test_cases) > 0:
+                    test_cases_fallback = "\n\n**Sample Input/Output:**\n"
+                    for i, test_case in enumerate(problem.test_cases[:2]):  # Show first 2 test cases
+                        if isinstance(test_case, dict):
+                            input_val = test_case.get('input', 'N/A')
+                            output_val = test_case.get('expected_output', 'N/A') 
+                            description = test_case.get('description', '')
+                            
+                            test_cases_fallback += f"\n**Example {i+1}:**\n"
+                            test_cases_fallback += f"Input: {input_val}\n"
+                            test_cases_fallback += f"Output: {output_val}\n"
+                            if description and description != 'N/A':
+                                test_cases_fallback += f"Explanation: {description}\n"
+                
+                return f"""Great! Let's move to the next problem.
+
+**Problem {problem_number}: {problem.title}**
+
+{problem.description}{test_cases_fallback}
+
+How are you thinking to solve this question?"""
+                
+        except Exception as e:
+            logger.error(f"❌ [ENHANCED_SESSION] Error generating problem presentation: {e}")
+            # Fallback to structured format with test cases
+            test_cases_fallback = ""
+            if problem.test_cases and len(problem.test_cases) > 0:
+                test_cases_fallback = "\n\n**Sample Input/Output:**\n"
+                for i, test_case in enumerate(problem.test_cases[:2]):  # Show first 2 test cases
+                    if isinstance(test_case, dict):
+                        input_val = test_case.get('input', 'N/A')
+                        output_val = test_case.get('expected_output', 'N/A') 
+                        description = test_case.get('description', '')
+                        
+                        test_cases_fallback += f"\n**Example {i+1}:**\n"
+                        test_cases_fallback += f"Input: {input_val}\n"
+                        test_cases_fallback += f"Output: {output_val}\n"
+                        if description and description != 'N/A':
+                            test_cases_fallback += f"Explanation: {description}\n"
+            
+            return f"""Great! Let's move to the next problem.
+
+**Problem {problem_number}: {problem.title}**
+
+{problem.description}{test_cases_fallback}
+
+How are you thinking to solve this question?"""
+
+    async def _generate_assignment_completion_message(self, user_input: str, assignment, conversation_history) -> str:
+        """Generate dynamic assignment completion message via OpenAI"""
+        
+        try:
+            from app.services.openai_client import openai_client
+            
+            prompt = f"""You are an AI programming tutor. The student has just completed ALL problems in the assignment: "{assignment.title}"
+
+Student's latest message: "{user_input}"
+
+Generate a congratulatory message that:
+1. Celebrates their achievement
+2. Acknowledges they've completed the entire assignment
+3. Is encouraging and positive
+
+Keep it warm and personal, showing genuine excitement for their accomplishment. This is a big milestone!"""
+
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an enthusiastic programming tutor who celebrates student achievements."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.8
+            )
+            
+            if response and response.choices:
+                return response.choices[0].message.content.strip()
+            else:
+                return f"🎉 Congratulations! You've completed all problems in the '{assignment.title}' assignment!"
+                
+        except Exception as e:
+            logger.error(f"❌ [ENHANCED_SESSION] Error generating completion message: {e}")
+            return f"🎉 Congratulations! You've completed all problems in the '{assignment.title}' assignment!"
     
     async def _resume_session(self, session: Session) -> Dict[str, Any]:
         """Resume an existing session"""
@@ -521,17 +878,40 @@ Let's pick up where we left off. What would you like to work on?"""
         return Session.model_validate(session_data)
     
     async def get_active_session(self, user_id: str, assignment_id: str) -> Optional[Session]:
-        """Get user's active session for an assignment"""
+        """Get user's most recent active session for an assignment"""
         db = await self._get_db()
         
-        session_data = await db.sessions.find_one({
+        # Get the most recent active session (sorted by created_at descending)
+        session_data = await db.sessions.find_one(
+            {
+                "user_id": user_id,
+                "assignment_id": assignment_id,
+                "status": SessionStatus.ACTIVE
+            },
+            sort=[("created_at", -1)]  # Get most recent first
+        )
+        
+        if not session_data:
+            return None
+        
+        # Check if there are multiple active sessions (should not happen after cleanup)
+        active_count = await db.sessions.count_documents({
             "user_id": user_id,
             "assignment_id": assignment_id,
             "status": SessionStatus.ACTIVE
         })
         
-        if not session_data:
-            return None
+        if active_count > 1:
+            logger.warning(f"🚨 [DUPLICATE_DETECTION] Found {active_count} active sessions for user {user_id}, assignment {assignment_id}")
+            # Log session IDs for debugging
+            all_active = await db.sessions.find({
+                "user_id": user_id,
+                "assignment_id": assignment_id,
+                "status": SessionStatus.ACTIVE
+            }).to_list(None)
+            
+            session_ids = [str(s["_id"]) for s in all_active]
+            logger.warning(f"🚨 [DUPLICATE_DETECTION] Active session IDs: {session_ids}")
         
         return Session.model_validate(session_data)
     
@@ -548,6 +928,40 @@ Let's pick up where we left off. What would you like to work on?"""
         
         return result.modified_count > 0
     
+    async def _cleanup_active_sessions(self, user_id: str, assignment_id: str) -> int:
+        """Clean up any existing active sessions for this user+assignment"""
+        db = await self._get_db()
+        
+        # Find all active sessions for this user+assignment
+        active_sessions = await db.sessions.find({
+            "user_id": user_id,
+            "assignment_id": assignment_id,
+            "status": SessionStatus.ACTIVE
+        }).to_list(None)
+        
+        if not active_sessions:
+            return 0
+        
+        logger.info(f"🧹 [CLEANUP] Found {len(active_sessions)} active sessions to cleanup for user {user_id}")
+        
+        # End all active sessions
+        session_ids = [session["_id"] for session in active_sessions]
+        
+        result = await db.sessions.update_many(
+            {"_id": {"$in": session_ids}},
+            {
+                "$set": {
+                    "status": SessionStatus.COMPLETED,
+                    "ended_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
+                    "session_notes": "Auto-ended due to new session creation"
+                }
+            }
+        )
+        
+        logger.info(f"🧹 [CLEANUP] Successfully ended {result.modified_count} sessions")
+        return result.modified_count
+    
     async def end_session(self, session_id: str) -> bool:
         """End a session"""
         db = await self._get_db()
@@ -562,6 +976,97 @@ Let's pick up where we left off. What would you like to work on?"""
         )
         
         return result.modified_count > 0
+    
+    async def _generate_problem_presentation(
+        self, 
+        problem: "Problem", 
+        problem_number: int, 
+        user_input: str, 
+        conversation_history: List[ConversationMessage]
+    ) -> str:
+        """Generate problem presentation for the next problem"""
+        
+        logger.info(f"🎯 [ENHANCED_SESSION] Generating presentation for problem {problem_number}: {problem.title}")
+        
+        try:
+            from app.services.openai_client import openai_client
+            
+            # Format test cases for display
+            test_cases_display = ""
+            if problem.test_cases and len(problem.test_cases) > 0:
+                test_cases_display = "\n\n**Sample Input/Output:**\n"
+                for i, test_case in enumerate(problem.test_cases[:2]):  # Show first 2 test cases
+                    if isinstance(test_case, dict):
+                        input_val = test_case.get('input', 'N/A')
+                        output_val = test_case.get('expected_output', 'N/A') 
+                        description = test_case.get('description', '')
+                        
+                        test_cases_display += f"\n**Example {i+1}:**\n"
+                        test_cases_display += f"Input: {input_val}\n"
+                        test_cases_display += f"Output: {output_val}\n"
+                        if description and description != 'N/A':
+                            test_cases_display += f"Explanation: {description}\n"
+            
+            prompt = f"""You are an AI tutor presenting a new programming problem to a student. Generate an encouraging transition that presents the problem clearly.
+
+The student just completed the previous problem and is ready for:
+
+**Problem {problem_number}: {problem.title}**
+
+{problem.description}{test_cases_display}
+
+Generate a response that:
+1. Briefly acknowledges their readiness for the next problem
+2. Presents the new problem clearly with the provided examples
+3. Asks "How are you thinking to solve this question?" at the end
+
+Keep it encouraging and focused. Don't give away any solutions."""
+
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an encouraging programming tutor who presents problems clearly."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300,
+                temperature=0.5
+            )
+            
+            if response and response.choices:
+                return response.choices[0].message.content.strip()
+            else:
+                # Fallback presentation
+                return self._fallback_problem_presentation(problem, problem_number)
+                
+        except Exception as e:
+            logger.error(f"❌ [ENHANCED_SESSION] Error generating problem presentation: {e}")
+            return self._fallback_problem_presentation(problem, problem_number)
+    
+    def _fallback_problem_presentation(self, problem: "Problem", problem_number: int) -> str:
+        """Fallback problem presentation when OpenAI fails"""
+        # Format test cases for fallback display
+        test_cases_fallback = ""
+        if problem.test_cases and len(problem.test_cases) > 0:
+            test_cases_fallback = "\n\n**Sample Input/Output:**\n"
+            for i, test_case in enumerate(problem.test_cases[:2]):  # Show first 2 test cases
+                if isinstance(test_case, dict):
+                    input_val = test_case.get('input', 'N/A')
+                    output_val = test_case.get('expected_output', 'N/A') 
+                    description = test_case.get('description', '')
+                    
+                    test_cases_fallback += f"\n**Example {i+1}:**\n"
+                    test_cases_fallback += f"Input: {input_val}\n"
+                    test_cases_fallback += f"Output: {output_val}\n"
+                    if description and description != 'N/A':
+                        test_cases_fallback += f"Explanation: {description}\n"
+        
+        return f"""Great! Let's move to the next problem.
+
+**Problem {problem_number}: {problem.title}**
+
+{problem.description}{test_cases_fallback}
+
+How are you thinking to solve this question?"""
 
 
 # Create service instance

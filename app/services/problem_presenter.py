@@ -8,7 +8,6 @@ from app.models import (
     ProblemStatus, LearningVelocity, CodeCompetencyLevel
 )
 from app.services.prompt_manager import smart_prompt_manager, PromptTemplate
-from app.services.smart_response_generator import smart_response_generator, ResponseGenerationContext
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,6 @@ class StructuredProblemPresenter:
     
     def __init__(self):
         self.prompt_manager = smart_prompt_manager
-        self.response_generator = smart_response_generator
     
     async def present_problem(
         self,
@@ -354,24 +352,9 @@ class StructuredProblemPresenter:
     ) -> str:
         """Generate the actual problem presentation text"""
         
-        # Create a simulated "ready to start" input to trigger problem introduction
-        context = ResponseGenerationContext(
-            user_id=user_id,
-            session_id=session_id,
-            assignment_id=assignment_id,
-            user_input="I'm ready to start the next problem",
-            current_problem=problem.dict(),
-            compression_result=compression_result
-        )
-        
-        # Use the smart response generator with problem introduction template
-        response_result = await self.response_generator.generate_intelligent_response(context)
-        
-        if response_result["success"]:
-            base_presentation = response_result["response"]
-        else:
-            # Fallback to manual presentation
-            base_presentation = self._create_manual_presentation(problem, presentation_style)
+        # TODO: Replace with structured tutoring engine
+        # For now, use manual presentation
+        base_presentation = self._create_manual_presentation(problem, presentation_style)
         
         # Enhance with style-specific elements
         enhanced_presentation = self._enhance_with_style_elements(

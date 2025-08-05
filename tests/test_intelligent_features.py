@@ -15,8 +15,6 @@ from app.services.performance_monitor import performance_monitor, PerformanceMet
 from app.services.intelligent_cache import intelligent_cache, CacheLevel, IntelligentCacheDecorators
 from app.services.resume_detection import resume_detection_service
 from app.services.prompt_manager import prompt_manager
-from app.services.smart_response_generator import smart_response_generator
-from app.services.problem_presenter import problem_presenter
 
 from app.models.session import Session, ConversationMessage
 from app.models.enums import CompressionLevel, MessageType, ResumeType

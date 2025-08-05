@@ -44,6 +44,9 @@ class StudentProgressDocument(BaseDocument):
     hints_used: int = 0
     time_spent_minutes: float = 0.0
     code_submissions: List[Dict[str, Any]] = Field(default_factory=list)
+    logic_explanation: Optional[str] = None
+    logic_approved: bool = False
+    logic_approval_timestamp: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     final_solution: Optional[str] = None
@@ -55,6 +58,8 @@ class SessionContext(BaseModel):
     compressed_summary: Optional[str] = None
     current_problem_data: Optional[Dict[str, Any]] = None
     learning_profile_data: Optional[Dict[str, Any]] = None
+    current_logic_explanation: Optional[str] = None
+    logic_approved: bool = False
     total_context_tokens: int = 0
     compression_metadata: Optional[Dict[str, Any]] = None
 
@@ -79,3 +84,7 @@ class SessionResponse(BaseModel):
     total_problems: Optional[int] = None
     session_number: int
     compression_level: str
+    logic_explanation: Optional[str] = None
+    logic_approved: bool = False
+    student_state: Optional[str] = None
+    tutoring_mode: Optional[str] = None

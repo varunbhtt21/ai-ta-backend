@@ -10,7 +10,6 @@ from app.models import (
 from app.services.session_manager import session_manager
 from app.services.context_compression import context_compression_manager
 from app.services.resume_detection import resume_detection_service
-from app.services.smart_response_generator import smart_response_generator, ResponseGenerationContext
 from app.services.problem_presenter import structured_problem_presenter
 from app.services.input_classifier import input_classifier
 from app.services.session_service import session_service
@@ -147,23 +146,16 @@ async def process_intelligent_message(
         learning_profile = await learning_profile_service.get_learning_profile(user_id)
         learning_profile_dict = learning_profile.model_dump() if learning_profile else None
         
-        # Step 6: Create response generation context
-        generation_context = ResponseGenerationContext(
-            user_id=user_id,
-            session_id=session_id,
-            assignment_id=session_data.assignment_id,
-            user_input=request.content,
-            current_problem=current_problem.model_dump() if current_problem else None,
-            session_data=session_data.model_dump(),
-            learning_profile=learning_profile_dict,
-            conversation_history=conversation_history,
-            compression_result=compression_result
-        )
-        
-        # Step 7: Generate intelligent response
-        response_result = await smart_response_generator.generate_intelligent_response(
-            generation_context
-        )
+        # TODO: Replace with structured tutoring engine
+        # For now, return a basic response
+        response_result = {
+            "success": True,
+            "response": "I'm here to help you learn! What would you like to work on?",
+            "input_classification": "general_chat",
+            "teaching_strategy": {"primary_approach": "basic"},
+            "prompt_template": "basic",
+            "tokens_used": 0
+        }
         
         # Step 8: Save user message to conversation
         await conversation_service.add_message(

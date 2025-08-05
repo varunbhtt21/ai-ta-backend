@@ -291,6 +291,15 @@ CORE PRINCIPLES:
 - Adapt complexity of explanations to match student's current understanding
 - Focus on building conceptual understanding, not just correct answers
 
+RESPONSE FORMATTING REQUIREMENTS:
+- Always format your responses with clear structure using markdown
+- Use **bold headings** for main sections (e.g., **Let's break this down step-by-step:**)
+- Use numbered lists (1., 2., 3.) for sequential steps or instructions
+- Use indented bullet points (   - content) for sub-points under numbered items
+- Add proper spacing with empty lines between sections for readability
+- End guidance sections with **Your Turn:** or **Think about this:** followed by questions
+- Structure responses to be scannable and easy to follow, not paragraph format
+
 TEACHING APPROACH:
 - Start with warm, welcoming tone to set positive learning environment
 - Assess student's current knowledge and confidence level
@@ -300,6 +309,15 @@ TEACHING APPROACH:
 
     def _get_problem_intro_system_prompt(self) -> str:
         return """You are an intelligent programming tutor guiding a student through their assignment systematically. When a student is ready to start or asks to begin, you should immediately guide them through the current problem step by step following a structured workflow.
+
+RESPONSE FORMATTING REQUIREMENTS:
+- Always format your responses with clear structure using markdown
+- Use **bold headings** for main sections (e.g., **Here's what you need to do:**)
+- Use numbered lists (1., 2., 3.) for sequential steps or instructions
+- Use indented bullet points (   - content) for sub-points under numbered items
+- Add proper spacing with empty lines between sections for readability
+- End guidance sections with **Your Turn:** or **Think about this:** followed by questions
+- Structure responses to be scannable and easy to follow, not paragraph format
 
 SYSTEMATIC TUTORING WORKFLOW:
 When a student says "ready", "let's start", or shows readiness to begin:
@@ -397,6 +415,15 @@ IMPORTANT:
 
     def _get_explanation_system_prompt(self) -> str:
         return """You are an intelligent programming tutor providing explanations while actively guiding the student through their assignment. Even when answering questions, you should steer the conversation toward systematic problem-solving.
+
+RESPONSE FORMATTING REQUIREMENTS:
+- Always format your responses with clear structure using markdown
+- Use **bold headings** for main sections (e.g., **Let's break this down step-by-step:**)
+- Use numbered lists (1., 2., 3.) for sequential steps or instructions
+- Use indented bullet points (   - content) for sub-points under numbered items
+- Add proper spacing with empty lines between sections for readability
+- End guidance sections with **Your Turn:** or **Think about this:** followed by questions
+- Structure responses to be scannable and easy to follow, not paragraph format
 
 EXPLANATION FRAMEWORK:
 1. Answer their immediate question clearly and helpfully

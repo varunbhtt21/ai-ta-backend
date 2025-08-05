@@ -11,12 +11,12 @@ from app.models import (
 from app.services.session_service import session_service
 from app.services.conversation_service import conversation_service
 from app.services.progress_service import progress_service
-from app.services.ai_tutoring_engine import ai_tutoring_engine
 from app.services.input_classifier import input_classifier
 from app.services.token_tracker import token_tracker
 from app.services.context_compression import context_compression_manager
 from app.services.resume_detection import resume_detection_service
-from app.services.smart_response_generator import smart_response_generator, ResponseGenerationContext
+from app.services.assignment_service import assignment_service
+from app.services.structured_tutoring_engine import structured_tutoring_engine
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -29,12 +29,11 @@ class SessionManager:
         self.session_service = session_service
         self.conversation_service = conversation_service
         self.progress_service = progress_service
-        self.ai_tutoring_engine = ai_tutoring_engine
         self.input_classifier = input_classifier
         self.token_tracker = token_tracker
         self.context_compression_manager = context_compression_manager
         self.resume_detection_service = resume_detection_service
-        self.smart_response_generator = smart_response_generator
+        self.structured_tutoring_engine = structured_tutoring_engine
     
     async def start_or_resume_session(
         self, 
@@ -70,6 +69,21 @@ class SessionManager:
                     user_id, request.assignment_id
                 )
                 logger.info(f"No active session found, created new session {session.id}")
+                
+                # For new sessions, check if we need initial progress record
+                progress_records = await self.progress_service.get_student_progress(
+                    user_id, request.assignment_id
+                )
+                if not progress_records:
+                    logger.info(f"Creating initial progress record for user {user_id}, problem 1")
+                    await self.progress_service.create_or_update_progress(
+                        user_id=user_id,
+                        assignment_id=request.assignment_id,
+                        session_id=str(session.id),
+                        problem_number=1,
+                        status=ProblemStatus.IN_PROGRESS,
+                        time_increment=0.0
+                    )
             else:
                 logger.info(f"Resumed active session {session.id}")
         
@@ -81,11 +95,26 @@ class SessionManager:
             logger.info(f"Created new session {session.id} for user {user_id}")
         
         # Get current progress to determine problem number
+        logger.info(f"📊 [SESSION_START] Getting progress records for user {user_id}, assignment {request.assignment_id}")
         progress_records = await self.progress_service.get_student_progress(
             user_id, request.assignment_id
         )
+        logger.info(f"📊 [SESSION_START] Retrieved {len(progress_records)} progress records")
         
         current_problem = self._determine_current_problem(progress_records)
+        logger.info(f"🎯 [SESSION_START] Determined current problem: {current_problem}")
+        
+        # If this is a brand new session with no progress, create initial progress record for problem 1
+        if not progress_records and current_problem == 1:
+            logger.info(f"Creating initial progress record for user {user_id}, problem 1")
+            await self.progress_service.create_or_update_progress(
+                user_id=user_id,
+                assignment_id=request.assignment_id,
+                session_id=str(session.id),
+                problem_number=1,
+                status=ProblemStatus.IN_PROGRESS,
+                time_increment=0.0
+            )
         
         # Update session with current problem
         if current_problem != session.current_problem:
@@ -113,15 +142,20 @@ class SessionManager:
     ) -> Dict[str, Any]:
         """Start session with intelligent resume detection and context-aware welcome"""
         
+        logger.info(f"🧠 [INTELLIGENT_SESSION] Starting intelligent session for user {user_id}, assignment {request.assignment_id}")
+        
         # Step 1: Intelligent resume detection
+        logger.info(f"🕵️ [INTELLIGENT_SESSION] Running resume detection analysis")
         resume_analysis = await self.resume_detection_service.determine_resume_type(
             user_id=user_id,
             assignment_id=request.assignment_id
         )
+        logger.info(f"🕵️ [INTELLIGENT_SESSION] Resume analysis result:", resume_analysis)
         
         # Step 2: Create or resume session based on analysis
         if resume_analysis["should_resume"] and resume_analysis.get("recommended_session_id"):
             # Resume specific session
+            logger.info(f"🔄 [INTELLIGENT_SESSION] Resuming specific session: {resume_analysis['recommended_session_id']}")
             enhanced_request = SessionRequest(
                 assignment_id=request.assignment_id,
                 resume_session=True,
@@ -129,6 +163,7 @@ class SessionManager:
             )
         elif resume_analysis["should_resume"]:
             # Resume most recent session
+            logger.info(f"🔄 [INTELLIGENT_SESSION] Resuming most recent session")
             enhanced_request = SessionRequest(
                 assignment_id=request.assignment_id,
                 resume_session=True,
@@ -136,6 +171,7 @@ class SessionManager:
             )
         else:
             # Start fresh session
+            logger.info(f"🆕 [INTELLIGENT_SESSION] Starting fresh session")
             enhanced_request = SessionRequest(
                 assignment_id=request.assignment_id,
                 resume_session=False,
@@ -143,7 +179,13 @@ class SessionManager:
             )
         
         # Use existing session creation logic
+        logger.info(f"📱 [INTELLIGENT_SESSION] Creating session with enhanced request")
         session_response = await self.start_or_resume_session(user_id, enhanced_request)
+        logger.info(f"📱 [INTELLIGENT_SESSION] Session created/resumed:", {
+            "session_id": session_response.session_id,
+            "current_problem": session_response.current_problem,
+            "status": session_response.status
+        })
         
         # Step 3: Generate intelligent welcome message based on resume type
         welcome_message = self._generate_intelligent_welcome(
@@ -152,7 +194,7 @@ class SessionManager:
         )
         
         # Enhance response with intelligent context
-        return {
+        intelligent_response = {
             "session_id": session_response.session_id,
             "assignment_id": session_response.assignment_id,
             "status": session_response.status,
@@ -162,8 +204,12 @@ class SessionManager:
             "session_number": session_response.session_number,
             "compression_level": session_response.compression_level,
             "resume_type": resume_analysis["resume_type"],
-            "intelligence_enabled": True
+            "intelligence_enabled": True,
+            "user_id": user_id
         }
+        
+        logger.info(f"🎉 [INTELLIGENT_SESSION] Intelligent session ready:", intelligent_response)
+        return intelligent_response
     
     def _generate_intelligent_welcome(self, resume_type: str, context: Dict[str, Any]) -> str:
         """Generate context-aware welcome message based on resume type"""
@@ -286,14 +332,50 @@ class SessionManager:
             problem_data = await self._get_current_problem_data(session)
             learning_profile = await self._get_learning_profile(session.user_id)
             
-            # Generate AI response
-            ai_response = await self.ai_tutoring_engine.generate_tutoring_response(
-                context=context,
-                user_input=user_input,
-                input_type=classification.input_type,
-                problem_data=problem_data,
-                learning_profile=learning_profile
-            )
+            # Get curriculum content from assignment
+            curriculum_content = ""
+            try:
+                assignment = await assignment_service.get_assignment(session.assignment_id)
+                if assignment and hasattr(assignment, 'curriculum_content'):
+                    curriculum_content = assignment.curriculum_content or ""
+                    logger.info(f"📖 SESSION_MANAGER: Curriculum content length: {len(curriculum_content)} characters")
+                else:
+                    logger.warning("⚠️ SESSION_MANAGER: No curriculum content available")
+            except Exception as e:
+                logger.warning(f"⚠️ SESSION_MANAGER: Failed to get curriculum content: {e}")
+            
+            # Get assignment and problem objects for structured tutoring engine
+            assignment = await assignment_service.get_assignment(session.assignment_id)
+            current_problem = None
+            if assignment and session.current_problem <= len(assignment.problems):
+                current_problem = assignment.problems[session.current_problem - 1]
+            
+            if not assignment or not current_problem:
+                # Fallback if we can't get assignment/problem data
+                ai_response = {
+                    "success": True,
+                    "content": "I'm here to help you learn! What would you like to work on?",
+                    "analysis_type": "fallback_response"
+                }
+            else:
+                # Generate AI response using structured tutoring engine
+                recent_messages = context.recent_messages if context else []
+                structured_response = await self.structured_tutoring_engine.generate_structured_response(
+                    user_input=user_input,
+                    user_id=session.user_id,
+                    assignment=assignment,
+                    current_problem=current_problem,
+                    conversation_history=recent_messages
+                )
+                
+                ai_response = {
+                    "success": structured_response.success,
+                    "content": structured_response.message,
+                    "analysis_type": "structured_tutoring",
+                    "student_state": structured_response.student_state.value if structured_response.student_state else None,
+                    "tutoring_mode": structured_response.tutoring_mode.value if structured_response.tutoring_mode else None,
+                    "teaching_notes": structured_response.teaching_notes
+                }
             
             return {
                 "success": ai_response.get("success", True),
@@ -408,17 +490,30 @@ class SessionManager:
     def _determine_current_problem(self, progress_records: List) -> int:
         """Determine which problem student should work on next"""
         
+        logger.info(f"🔍 [CURRENT_PROBLEM] Determining current problem from {len(progress_records)} progress records")
+        
         if not progress_records:
+            logger.info("🔍 [CURRENT_PROBLEM] No progress records found, starting with problem 1")
             return 1
         
-        # Find first incomplete problem
-        for progress in progress_records:
+        # Log all progress records for debugging
+        for i, progress in enumerate(progress_records):
+            logger.info(f"   📊 Record {i+1}: Problem {progress.problem_number}, Status: {progress.status}, Attempts: {progress.attempts}")
+        
+        # Sort progress records by problem number to ensure proper order
+        sorted_progress = sorted(progress_records, key=lambda p: p.problem_number)
+        
+        # Find first problem that is not completed
+        for progress in sorted_progress:
             if progress.status in [ProblemStatus.NOT_STARTED.value, ProblemStatus.IN_PROGRESS.value, ProblemStatus.STUCK.value]:
+                logger.info(f"🎯 [CURRENT_PROBLEM] Found incomplete problem: {progress.problem_number} (status: {progress.status})")
                 return progress.problem_number
         
-        # All problems completed, start next one
+        # If all tracked problems are completed, return the next problem number
         max_problem = max(p.problem_number for p in progress_records)
-        return max_problem + 1
+        next_problem = max_problem + 1
+        logger.info(f"🎯 [CURRENT_PROBLEM] All tracked problems completed (max: {max_problem}), moving to next: {next_problem}")
+        return next_problem
     
     async def end_session(self, session_id: str, user_id: str) -> bool:
         """End a tutoring session"""

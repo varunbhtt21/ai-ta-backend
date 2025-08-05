@@ -56,22 +56,28 @@ async def start_structured_session(
 ):
     """Start a structured tutoring session using OOP prototype methodology"""
     
-    logger.info(f"Starting structured session for user {current_user.id} on assignment {request.assignment_id}")
+    logger.info(f"🏗️ [STRUCTURED_SESSION] Starting structured session for user {current_user.id} on assignment {request.assignment_id}")
     
     try:
         # Verify assignment exists
         assignment = await assignment_service.get_assignment(request.assignment_id)
         if not assignment:
+            logger.error(f"❌ [STRUCTURED_SESSION] Assignment not found: {request.assignment_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Assignment not found"
             )
         
+        logger.info(f"📚 [STRUCTURED_SESSION] Assignment found: {assignment.title}")
+        
         # Start the intelligent session
+        logger.info(f"🧠 [STRUCTURED_SESSION] Starting intelligent session")
         session_data = await enhanced_session_service.start_intelligent_session(
             user_id=str(current_user.id),
             assignment_id=request.assignment_id
         )
+        
+        logger.info(f"✅ [STRUCTURED_SESSION] Session created:", session_data)
         
         return ResponseBase(
             success=True,
